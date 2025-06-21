@@ -4,9 +4,10 @@ import sys
 import time
 import csv
 import concurrent.futures
+from datetime import datetime, timezone
 
 # Official Polymarket API endpoint for events
-API_URL = "https://gamma-api.polymarket.com/events"
+API_URL = "https://gamma-api.polymarket.com/events?closed=false"
 
 def verify_market_active_status_batch(event_ids):
     """
@@ -112,9 +113,12 @@ def fetch_detailed_events():
             all_event_ids.extend(page_ids)
             print(f"    - Found {len(page_ids)} events on this page. Total IDs so far: {len(all_event_ids)}")
             
-            # No limit on the number of events to fetch
+            # TEMPORARY: Limit to 5 pages for testing
+            if page_num >= 5:
+                print("  - Reached 5 pages limit (TEMPORARY LIMIT FOR TESTING)")
+                break
+                
             # Continue pagination until there are no more events
-
             if len(event_summaries_page) < limit:
                 print("  - Fetched less than limit, assuming this is the last page.")
                 break # Likely the last page
@@ -208,6 +212,9 @@ def main():
     csv_fieldnames = ['Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date']
     for i in range(max_outcomes_for_csv):
         csv_fieldnames.append(f'Outcome {i+1} Question')
+        csv_fieldnames.append(f'Outcome {i+1} Market ID')
+        csv_fieldnames.append(f'Outcome {i+1} Yes Token ID')
+        csv_fieldnames.append(f'Outcome {i+1} No Token ID')
 
     with open(csv_file_name, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=csv_fieldnames)
@@ -226,6 +233,23 @@ def main():
                 for i, market in enumerate(markets_list):
                     if i < max_outcomes_for_csv: 
                         row[f'Outcome {i+1} Question'] = market.get('question')
+                        row[f'Outcome {i+1} Market ID'] = market.get('id')
+                        
+                        # Extract CLOB token IDs if available
+                        clob_token_ids_str = market.get('clobTokenIds')
+                        yes_token_id, no_token_id = '', ''
+                        if clob_token_ids_str and isinstance(clob_token_ids_str, str):
+                            try:
+                                import json
+                                clob_token_ids = json.loads(clob_token_ids_str)
+                                if isinstance(clob_token_ids, list) and len(clob_token_ids) >= 2:
+                                    yes_token_id = clob_token_ids[0]
+                                    no_token_id = clob_token_ids[1]
+                            except json.JSONDecodeError:
+                                # If parsing fails, IDs will remain empty strings
+                                pass
+                        row[f'Outcome {i+1} Yes Token ID'] = yes_token_id
+                        row[f'Outcome {i+1} No Token ID'] = no_token_id
                 writer.writerow(row)
     
     if all_detailed_events:
@@ -243,8 +267,41 @@ def main():
     # Verify active status of events using concurrent batch processing
     verified_active_events = verify_events_with_concurrency(all_detailed_events)
     
-    # Filter multi-outcome events (more than 2 outcomes)
-    multi_outcome_events = [event for event in verified_active_events if len(event.get('markets', [])) > 2]
+    # Stricter filtering for truly active, tradable multi-outcome events
+    print("\nApplying stricter filtering for active, tradable markets with future end dates...")
+    truly_active_multi_outcome_events = []
+    now = datetime.now(timezone.utc)
+
+    for event in verified_active_events:
+        active_markets = []
+        for market in event.get('markets', []):
+            end_date_str = market.get('endDate')
+            
+            # Perform all checks to ensure the market is currently tradable
+            if (market.get('active') is True and
+                market.get('enableOrderBook') is True and
+                end_date_str):
+                
+                try:
+                    # Parse the end date and check if it's in the future
+                    if end_date_str.endswith('Z'):
+                        end_date_str = end_date_str[:-1] + '+00:00'
+                    end_date = datetime.fromisoformat(end_date_str)
+
+                    if end_date > now:
+                        active_markets.append(market)
+                except (ValueError, TypeError):
+                    # Ignore markets with invalid date formats
+                    continue
+        
+        # Only keep events that still have more than 2 active markets after filtering
+        if len(active_markets) > 2:
+            filtered_event = event.copy()
+            filtered_event['markets'] = active_markets
+            truly_active_multi_outcome_events.append(filtered_event)
+
+    multi_outcome_events = truly_active_multi_outcome_events
+    print(f"Found {len(multi_outcome_events)} events containing truly active, tradable multi-outcome markets.")
     
     print(f"\n--- Multi-Outcome Market Report ---")
     if multi_outcome_events:
@@ -261,6 +318,9 @@ def main():
         multi_outcome_fieldnames = ['Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date']
         for i in range(max_multi_outcomes):
             multi_outcome_fieldnames.append(f'Outcome {i+1} Question')
+            multi_outcome_fieldnames.append(f'Outcome {i+1} Market ID')
+            multi_outcome_fieldnames.append(f'Outcome {i+1} Yes Token ID')
+            multi_outcome_fieldnames.append(f'Outcome {i+1} No Token ID')
         
         # Write multi-outcome events to CSV
         with open(multi_outcome_csv_file, 'w', newline='', encoding='utf-8') as multi_csvfile:
@@ -282,6 +342,23 @@ def main():
                 for i, market in enumerate(markets):
                     if i < max_multi_outcomes:
                         row[f'Outcome {i+1} Question'] = market.get('question')
+                        row[f'Outcome {i+1} Market ID'] = market.get('id')
+                        
+                        # Extract CLOB token IDs if available
+                        clob_token_ids_str = market.get('clobTokenIds')
+                        yes_token_id, no_token_id = '', ''
+                        if clob_token_ids_str and isinstance(clob_token_ids_str, str):
+                            try:
+                                import json
+                                clob_token_ids = json.loads(clob_token_ids_str)
+                                if isinstance(clob_token_ids, list) and len(clob_token_ids) >= 2:
+                                    yes_token_id = clob_token_ids[0]
+                                    no_token_id = clob_token_ids[1]
+                            except json.JSONDecodeError:
+                                # If parsing fails, IDs will remain empty strings
+                                pass
+                        row[f'Outcome {i+1} Yes Token ID'] = yes_token_id
+                        row[f'Outcome {i+1} No Token ID'] = no_token_id
                 
                 multi_writer.writerow(row)
         
@@ -298,7 +375,23 @@ def main():
             print("  Outcomes (Markets):")
             markets_list_console = e.get('markets', [])
             for market_console in markets_list_console:
-                print(f"    - {market_console.get('question')}")
+                market_id = market_console.get('id', 'N/A')
+                clob_token_ids_str = market_console.get('clobTokenIds')
+                yes_token, no_token = 'N/A', 'N/A'
+                if clob_token_ids_str and isinstance(clob_token_ids_str, str):
+                    try:
+                        import json
+                        clob_token_ids = json.loads(clob_token_ids_str)
+                        if isinstance(clob_token_ids, list):
+                            if len(clob_token_ids) >= 1:
+                                yes_token = str(clob_token_ids[0])
+                            if len(clob_token_ids) >= 2:
+                                no_token = str(clob_token_ids[1])
+                    except json.JSONDecodeError:
+                        pass # Keep tokens as 'N/A'
+                print(f"    - {market_console.get('question')} (Market ID: {market_id})")
+                print(f"      Yes CLOB Token ID: {yes_token}")
+                print(f"      No CLOB Token ID: {no_token}")
             print("") # Print a newline after each event's details
     else:
         print(f"No multi-outcome events found among the {len(all_detailed_events)} processed events.")
