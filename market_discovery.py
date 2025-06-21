@@ -4,10 +4,15 @@ import sys
 import time
 import csv
 import concurrent.futures
+import re
 from datetime import datetime, timezone
 
 # Official Polymarket API endpoint for events
 API_URL = "https://gamma-api.polymarket.com/events?closed=false"
+
+# Constants for mutual exclusivity detection
+ME_PRICE_THRESHOLD = 0.10  # How close to 1.0 the sum of implied probabilities needs to be
+MIN_LIQUIDITY = 10  # Minimum liquidity to consider a market for arbitrage
 
 def verify_market_active_status_batch(event_ids):
     """
@@ -44,6 +49,9 @@ def verify_market_active_status_batch(event_ids):
         print(f"Error verifying batch of markets: {e}")
     
     return result
+
+
+
 
 def verify_events_with_concurrency(events, batch_size=50, max_workers=5):
     """
@@ -336,10 +344,11 @@ def main():
         for i, e in enumerate(multi_outcome_events[:5]):
             print(f"  {i+1}. Title: {e.get('title')}, Score: {e.get('priority_score'):.2f}")
 
-
-        # --- Write Multi-Outcome Events to CSV ---
+        # Define CSV headers for multi-outcome events
         multi_outcome_fieldnames = [
-            'Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date', 'Priority Score'
+            'Event ID', 'Title', 'Number of Outcomes', 'Active',
+            'Start Date', 'End Date', 'Priority Score', 'Mutually Exclusive',
+            'Sum Bids', 'Arbitrage Opportunity', 'Has Liquidity'
         ]
 
         for i in range(1, max_multi_outcomes + 1):
@@ -359,22 +368,96 @@ def main():
             multi_writer.writeheader()
             
             for e in multi_outcome_events:
+                # Prepare data for mutual exclusivity detection
+                markets = e.get('markets', [])
+                num_outcomes = len(markets)
+                bids = []
+                asks = []
+                liquidities = []
+                
+                # Extract bid/ask prices for mutual exclusivity detection
+                for market in markets:
+                    best_bid = market.get('bestBid')
+                    best_ask = market.get('bestAsk')
+                    liquidity = float(market.get('liquidityNum', 0) or 0)
+                    
+                    if best_bid is not None and best_ask is not None:
+                        try:
+                            bids.append(float(best_bid))
+                            asks.append(float(best_ask))
+                            liquidities.append(liquidity)
+                        except (ValueError, TypeError):
+                            pass
+                
+                # Calculate implied probabilities and arbitrage opportunities
+                sum_bids = sum(bids) if bids else 0
+                
+                # Determine if mutually exclusive based on bid prices
+                # If sum of bids is close to 1.0 AND not close to 0, likely mutually exclusive
+                is_mutually_exclusive = bids and abs(sum_bids - 1.0) <= ME_PRICE_THRESHOLD and sum_bids > 0.5
+                
+                # Check for non-exclusivity based on event title/type
+                non_exclusive_keywords = ['playoff', 'make it', 'qualify']
+                if any(keyword in e.get('title', '').lower() for keyword in non_exclusive_keywords):
+                    # These events are likely not mutually exclusive (multiple teams can qualify)
+                    is_mutually_exclusive = False
+                
+                # Calculate arbitrage opportunities
+                arb_opportunity = 0
+                if is_mutually_exclusive and sum_bids < 1.0:
+                    # Long arbitrage: buy all outcomes
+                    arb_opportunity = 1.0 - sum_bids
+                
+                # Check for short arbitrage opportunities (selling overpriced outcomes)
+                short_arb = 0
+                if sum_bids > 1.0:
+                    short_arb = sum_bids - 1.0
+                
+                # Take the better of the two arbitrage opportunities
+                arb_opportunity = max(arb_opportunity, short_arb)
+                
+                # Calculate normalized probabilities (forcing sum to 1.0)
+                normalized_bids = [bid/sum_bids for bid in bids] if sum_bids > 0 else []
+                
+                # Calculate priority score boost for mutually exclusive events with liquidity
+                priority_score = e.get('priority_score', 0)
+                has_liquidity = any(liq >= MIN_LIQUIDITY for liq in liquidities)
+                
+                if is_mutually_exclusive and has_liquidity:
+                    # Boost priority score for mutually exclusive events with liquidity
+                    priority_score = priority_score * 2.0 if priority_score else 2000
+                
+                # Create a row for this event with default values for all fields
                 row = {
-                    'Event ID': e.get('id'),
-                    'Title': e.get('title'),
-                    'Number of Outcomes': len(e.get('markets', [])),
-                    'Active': e.get('active'),
-                    'Start Date': e.get('startDate'),
-                    'End Date': e.get('endDate'),
-                    'Priority Score': e.get('priority_score')
+                    'Event ID': e.get('id', ''),
+                    'Title': e.get('title', ''),
+                    'Number of Outcomes': num_outcomes,
+                    'Active': e.get('active', False),
+                    'Start Date': e.get('startDate', ''),
+                    'End Date': e.get('endDate', ''),
+                    'Priority Score': priority_score,
+                    'Mutually Exclusive': is_mutually_exclusive,
+                    'Sum Bids': sum_bids,
+                    'Arbitrage Opportunity': arb_opportunity,
+                    'Has Liquidity': has_liquidity
                 }
+                
+                # Initialize all outcome fields with empty values to prevent NaN issues
+                for i in range(1, max_multi_outcomes + 1):
+                    row[f'Outcome {i} Question'] = ''
+                    row[f'Outcome {i} Market ID'] = ''
+                    row[f'Outcome {i} Yes Token ID'] = ''
+                    row[f'Outcome {i} No Token ID'] = ''
+                    row[f'Outcome {i} Liquidity'] = 0
+                    row[f'Outcome {i} Volume 24hr'] = 0
+                    row[f'Outcome {i} Spread'] = 0
                 
                 # Add each market question to the row
                 markets = e.get('markets', [])
                 for i, market in enumerate(markets):
                     if i < max_multi_outcomes:
-                        row[f'Outcome {i+1} Question'] = market.get('question')
-                        row[f'Outcome {i+1} Market ID'] = market.get('id')
+                        row[f'Outcome {i+1} Question'] = market.get('question', '')
+                        row[f'Outcome {i+1} Market ID'] = market.get('id', '')
                         
                         # Extract CLOB token IDs if available
                         clob_token_ids_str = market.get('clobTokenIds')
@@ -391,22 +474,103 @@ def main():
                                 pass
                         row[f'Outcome {i+1} Yes Token ID'] = yes_token_id
                         row[f'Outcome {i+1} No Token ID'] = no_token_id
-                        row[f'Outcome {i+1} Liquidity'] = market.get('liquidityNum')
-                        row[f'Outcome {i+1} Volume 24hr'] = market.get('volume24hr')
-                        row[f'Outcome {i+1} Spread'] = market.get('spread')
+                        row[f'Outcome {i+1} Liquidity'] = market.get('liquidityNum', 0) or 0
+                        row[f'Outcome {i+1} Volume 24hr'] = market.get('volume24hr', 0) or 0
+                        row[f'Outcome {i+1} Spread'] = market.get('spread', 0) or 0
                 
                 multi_writer.writerow(row)
         
+        # Count mutually exclusive events and arbitrage opportunities
+        me_count = 0
+        arb_count = 0
+        liquid_arb_count = 0
+        
+        for e in multi_outcome_events:
+            markets = e.get('markets', [])
+            bids = []
+            liquidities = []
+            
+            for market in markets:
+                best_bid = market.get('bestBid')
+                liquidity = float(market.get('liquidityNum', 0) or 0)
+                
+                if best_bid is not None:
+                    try:
+                        bids.append(float(best_bid))
+                        liquidities.append(liquidity)
+                    except (ValueError, TypeError):
+                        pass
+            
+            sum_bids = sum(bids) if bids else 0
+            is_mutually_exclusive = bids and abs(sum_bids - 1.0) <= ME_PRICE_THRESHOLD
+            has_liquidity = any(liq >= MIN_LIQUIDITY for liq in liquidities)
+            
+            if is_mutually_exclusive:
+                me_count += 1
+            
+            # Check for arbitrage opportunities
+            arb_opportunity = 0
+            if sum_bids < 1.0:
+                arb_opportunity = 1.0 - sum_bids
+            elif sum_bids > 1.0:
+                arb_opportunity = sum_bids - 1.0
+                
+            if arb_opportunity >= 0.02:  # 2% minimum arbitrage to count
+                arb_count += 1
+                if has_liquidity:
+                    liquid_arb_count += 1
+        
         print(f"Successfully wrote {len(multi_outcome_events)} multi-outcome events to {multi_outcome_csv_file}")
+        print(f"Found {me_count} mutually exclusive events ({me_count/len(multi_outcome_events)*100:.1f}% of multi-outcome events)")
+        print(f"Found {arb_count} arbitrage opportunities ({arb_count/len(multi_outcome_events)*100:.1f}% of events)")
+        print(f"Found {liquid_arb_count} liquid arbitrage opportunities with min liquidity {MIN_LIQUIDITY}")
+        print(f"Using bid sum threshold of ±{ME_PRICE_THRESHOLD} (sum of bids between {1.0-ME_PRICE_THRESHOLD:.2f} and {1.0+ME_PRICE_THRESHOLD:.2f})")
+        
         
         # Print multi-outcome events to console
         for e in multi_outcome_events:
+            # Calculate mutual exclusivity for console output
+            markets = e.get('markets', [])
+            bids = []
+            asks = []
+            liquidities = []
+            
+            for market in markets:
+                best_bid = market.get('bestBid')
+                best_ask = market.get('bestAsk')
+                liquidity = float(market.get('liquidityNum', 0) or 0)
+                
+                if best_bid is not None and best_ask is not None:
+                    try:
+                        bids.append(float(best_bid))
+                        asks.append(float(best_ask))
+                        liquidities.append(liquidity)
+                    except (ValueError, TypeError):
+                        pass
+            
+            sum_bids = sum(bids) if bids else 0
+            is_mutually_exclusive = bids and abs(sum_bids - 1.0) <= ME_PRICE_THRESHOLD
+            has_liquidity = any(liq >= MIN_LIQUIDITY for liq in liquidities)
+            
+            # Calculate arbitrage opportunities
+            arb_opportunity = 0
+            arb_type = "None"
+            if sum_bids < 1.0:
+                arb_opportunity = 1.0 - sum_bids
+                arb_type = "Long (Buy All)"
+            elif sum_bids > 1.0:
+                arb_opportunity = sum_bids - 1.0
+                arb_type = "Short (Sell All)"
+            
             print(f"- Event ID: {e.get('id')}")
             print(f"  Title: {e.get('title')}")
             print(f"  Number of Outcomes: {len(e.get('markets', []))}")
             print(f"  Active: {e.get('active')}")
-            print(f"  Start Date: {e.get('startDate')}")
-            print(f"  End Date: {e.get('endDate')}")
+            print(f"  Mutually Exclusive: {is_mutually_exclusive}")
+            print(f"  Sum of Bids: {sum_bids:.3f} (Target: 1.00 ± {ME_PRICE_THRESHOLD})")
+            print(f"  Arbitrage: {arb_opportunity:.3f} ({arb_type})")
+            print(f"  Has Liquidity: {has_liquidity} (Min: {MIN_LIQUIDITY})")
+            print(f"  Priority Score: {e.get('priority_score', 0):.1f}")
             print("  Outcomes (Markets):")
             markets_list_console = e.get('markets', [])
             for market_console in markets_list_console:

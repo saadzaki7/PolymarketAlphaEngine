@@ -8,9 +8,10 @@ import websockets
 from datetime import datetime, timezone
 
 # Configuration
-NUM_EVENTS_TO_MONITOR = 1  # Reduced to just 1 event for testing
+NUM_EVENTS_TO_MONITOR = 10  # Monitor top 10 events
 INPUT_CSV_FILE = 'multi_outcome_polymarket_events.csv'
 OUTPUT_CSV_FILE = 'market_data_timeseries.csv'
+ORDERBOOK_DATA_DIR = 'orderbook_data'  # Directory to store full orderbook JSON files
 WEBSOCKET_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market' # Correct endpoint for market data
 
 # Hardcoded test tokens from your example
@@ -65,13 +66,34 @@ def load_market_context(limit=NUM_EVENTS_TO_MONITOR):
         return {}
 
 # --- Step 2: Prepare a Data File ---
-def setup_output_file():
-    """Creates the output CSV with a header if it doesn't exist."""
+def setup_output_files():
+    # Create CSV file with headers if it doesn't exist
     if not os.path.exists(OUTPUT_CSV_FILE):
-        with open(OUTPUT_CSV_FILE, 'w', newline='', encoding='utf-8') as f:
+        with open(OUTPUT_CSV_FILE, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['timestamp', 'event_id', 'market_id', 'question', 'token_id', 'side', 'best_bid', 'best_ask', 'mid_price'])
-        print(f"Created output file: {OUTPUT_CSV_FILE}")
+            writer.writerow(['timestamp', 'event_id', 'market_id', 'question', 'token_id', 'side', 
+                           'best_bid', 'best_bid_size', 'best_ask', 'best_ask_size', 'mid_price', 'spread'])
+        print(f"[INFO] Created new CSV file: {OUTPUT_CSV_FILE}")
+    else:
+        print(f"[INFO] Using existing CSV file: {OUTPUT_CSV_FILE}")
+    
+    # Create directory for orderbook data if it doesn't exist
+    if not os.path.exists(ORDERBOOK_DATA_DIR):
+        os.makedirs(ORDERBOOK_DATA_DIR)
+        print(f"[INFO] Created directory: {ORDERBOOK_DATA_DIR}")
+    else:
+        print(f"[INFO] Using existing directory: {ORDERBOOK_DATA_DIR}")
+        
+    # Test file write permissions
+    try:
+        test_file = f"{ORDERBOOK_DATA_DIR}/test_write.txt"
+        with open(test_file, 'w') as f:
+            f.write("Test write permission")
+        os.remove(test_file)
+        print("[INFO] File write permissions confirmed")
+    except Exception as e:
+        print(f"[ERROR] File write permission test failed: {e}")
+        print(f"Created directory for orderbook data: {ORDERBOOK_DATA_DIR}")
 
 # --- Step 3: Main Websocket Collector ---
 async def data_collector(token_map, file_lock):
@@ -125,34 +147,185 @@ async def data_collector(token_map, file_lock):
                                     print(f"[{now}] [INFO] No price updates available yet. Waiting...")
                                 elif data and len(data) > 0:
                                     for item in data:
-                                        if isinstance(item, dict):
-                                            token_id = item.get('asset_id')
-                                            price = item.get('price')
-                                            market = item.get('market')
-                                            timestamp_ms = item.get('timestamp')
+                                        try:
+                                            if isinstance(item, dict):
+                                                token_id = item.get('asset_id')
+                                                server_timestamp = item.get('timestamp')
+                                                market = item.get('market')
+                                                event_type = item.get('event_type')
+                                                
+                                                # Print raw item for debugging (first 100 chars)
+                                                item_str = str(item)
+                                                print(f"[{now}] [DEBUG] Item type: {event_type}, token: {token_id[:8] if token_id else None}")
+                                                
+                                                # Check the event type
+                                                event_type = item.get('event_type')
+                                                token_id = item.get('asset_id')
+                                        except Exception as e:
+                                            print(f"[ERROR] Error parsing item: {e}")
+                                            continue
                                             
-                                            # Extract best bid and ask prices if available
-                                            bids = item.get('bids', [])
-                                            asks = item.get('asks', [])
-                                            best_bid = float(bids[0]['price']) if bids else None
-                                            best_ask = float(asks[0]['price']) if asks else None
-                                            mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else None
+                                            # Handle different event types
+                                            if event_type == 'book':
+                                                # Full orderbook data
+                                                bids = item.get('bids', [])
+                                                asks = item.get('asks', [])
+                                                
+                                                # Get best bid/ask with sizes
+                                                best_bid = float(bids[0]['price']) if bids else None
+                                                best_bid_size = float(bids[0]['size']) if bids else None
+                                                best_ask = float(asks[0]['price']) if asks else None
+                                                best_ask_size = float(asks[0]['size']) if asks else None
+                                                
+                                                # Calculate mid price and spread
+                                                mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else None
+                                                spread = (best_ask - best_bid) if best_bid and best_ask else None
+                                                
+                                                # Print market summary
+                                                print(f"[{now}] [BOOK] Asset: {token_id[:8]}... | Bid: {best_bid} ({best_bid_size}) | Ask: {best_ask} ({best_ask_size}) | Spread: {spread if spread else None}")
+                                                
+                                            elif event_type == 'price_change':
+                                                # Price change event
+                                                changes = item.get('changes', [])
+                                                
+                                                # Process each change
+                                                for change in changes:
+                                                    side = change.get('side')
+                                                    price = change.get('price')
+                                                    size = change.get('size')
+                                                    
+                                                    print(f"[{now}] [PRICE] Asset: {token_id[:8]}... | {side}: {price} | Size: {size}")
                                             
-                                            # Print market summary
-                                            print(f"[{now}] [MARKET] Asset: {token_id[:8]}... | Bid: {best_bid} | Ask: {best_ask} | Mid: {mid_price:.4f if mid_price else None}")
-                                            
+                                            # Debug token lookup
                                             if token_id in token_map:
                                                 context = token_map[token_id]
                                                 timestamp = datetime.now(timezone.utc).isoformat()
-                                                # Save both best bid and ask prices
+                                                server_timestamp = item.get('timestamp')
+                                                print(f"[{now}] [INFO] Found token {token_id[:8]}... in context map")
+                                            else:
+                                                print(f"[{now}] [WARN] Token {token_id[:8]}... not found in context map")
+                                                
+                                                # Let's save the data anyway with minimal context
+                                                context = {
+                                                    'event_id': 'unknown',
+                                                    'market_id': item.get('market', 'unknown'),
+                                                    'question': 'unknown',
+                                                    'side': 'unknown'
+                                                }
+                                                timestamp = datetime.now(timezone.utc).isoformat()
+                                                server_timestamp = item.get('timestamp')
+                                            
+                                            # Save data based on event type
+                                            if event_type == 'book':
+                                                # 1. Save summary data to CSV
                                                 row = [timestamp, context['event_id'], context['market_id'], 
                                                        context['question'], token_id, context['side'], 
-                                                       best_bid, best_ask, mid_price]
-                                                async with file_lock:
-                                                    with open(OUTPUT_CSV_FILE, 'a', newline='') as f:
-                                                        writer = csv.writer(f)
-                                                        writer.writerow(row)
-                                                print(f"[DATA] Saved price update for {context['question']} ({context['side']}): {price}")
+                                                       best_bid, best_bid_size, best_ask, best_ask_size, mid_price, spread]
+                                                
+                                                try:
+                                                    async with file_lock:
+                                                        with open(OUTPUT_CSV_FILE, 'a', newline='') as f:
+                                                            writer = csv.writer(f)
+                                                            writer.writerow(row)
+                                                    print(f"[{now}] [INFO] Successfully wrote row to CSV")
+                                                except Exception as e:
+                                                    print(f"[{now}] [ERROR] Failed to write to CSV: {e}")
+                                                
+                                                # 2. Save full orderbook data to JSON file
+                                                orderbook_data = {
+                                                    'timestamp': timestamp,
+                                                    'server_timestamp': server_timestamp,
+                                                    'token_id': token_id,
+                                                    'market_id': context['market_id'],
+                                                    'event_id': context['event_id'],
+                                                    'question': context['question'],
+                                                    'side': context['side'],
+                                                    'event_type': event_type,
+                                                    'summary': {
+                                                        'best_bid': best_bid,
+                                                        'best_bid_size': best_bid_size,
+                                                        'best_ask': best_ask,
+                                                        'best_ask_size': best_ask_size,
+                                                        'mid_price': mid_price,
+                                                        'spread': spread
+                                                    },
+                                                    'full_orderbook': {
+                                                        'bids': bids,
+                                                        'asks': asks
+                                                    }
+                                                }
+                                                
+                                                # Save to a timestamped JSON file
+                                                json_filename = f"{ORDERBOOK_DATA_DIR}/{token_id[:8]}_{int(datetime.now().timestamp())}.json"
+                                                try:
+                                                    async with file_lock:
+                                                        with open(json_filename, 'w') as f:
+                                                            json.dump(orderbook_data, f, indent=2)
+                                                    print(f"[{now}] [INFO] Successfully saved orderbook JSON to {json_filename}")
+                                                except Exception as e:
+                                                    print(f"[{now}] [ERROR] Failed to save JSON file {json_filename}: {e}")
+                                                
+                                                print(f"[DATA] Saved orderbook for {context['question']} ({context['side']})")
+                                                
+                                            elif event_type == 'price_change':
+                                                # Save price change data
+                                                changes = item.get('changes', [])
+                                                
+                                                # Create a structured object with the price change data
+                                                price_data = {
+                                                    'timestamp': timestamp,
+                                                    'server_timestamp': server_timestamp,
+                                                    'token_id': token_id,
+                                                    'market_id': context['market_id'],
+                                                    'event_id': context['event_id'],
+                                                    'question': context['question'],
+                                                    'side': context['side'],
+                                                    'event_type': event_type,
+                                                    'changes': changes
+                                                }
+                                                
+                                                # Save to a timestamped JSON file
+                                                json_filename = f"{ORDERBOOK_DATA_DIR}/{token_id[:8]}_price_{int(datetime.now().timestamp())}.json"
+                                                try:
+                                                    async with file_lock:
+                                                        with open(json_filename, 'w') as f:
+                                                            json.dump(price_data, f, indent=2)
+                                                    print(f"[{now}] [INFO] Successfully saved price change JSON to {json_filename}")
+                                                except Exception as e:
+                                                    print(f"[{now}] [ERROR] Failed to save JSON file {json_filename}: {e}")
+                                                
+                                                # Also save to CSV for time series analysis
+                                                for change in changes:
+                                                    change_side = change.get('side')
+                                                    change_price = change.get('price')
+                                                    change_size = change.get('size')
+                                                    
+                                                    # Map SELL/BUY to bid/ask for CSV consistency
+                                                    if change_side == 'SELL':
+                                                        row = [timestamp, context['event_id'], context['market_id'],
+                                                              context['question'], token_id, context['side'],
+                                                              None, None, change_price, change_size, None, None]
+                                                    else:  # BUY
+                                                        row = [timestamp, context['event_id'], context['market_id'],
+                                                              context['question'], token_id, context['side'],
+                                                              change_price, change_size, None, None, None, None]
+                                                    
+                                                    try:
+                                                        async with file_lock:
+                                                            with open(OUTPUT_CSV_FILE, 'a', newline='') as f:
+                                                                writer = csv.writer(f)
+                                                                writer.writerow(row)
+                                                        print(f"[{now}] [INFO] Successfully wrote price change to CSV")
+                                                    except Exception as e:
+                                                        print(f"[{now}] [ERROR] Failed to write price change to CSV: {e}")
+                                                
+                                                print(f"[DATA] Saved price changes for {context['question']} ({context['side']})")
+                                            elif event_type == 'last_trade_price':
+                                                # Save last trade price data
+                                                last_price = item.get('last_price')
+                                                if last_price:
+                                                    print(f"[{now}] [TRADE] Last trade price for {token_id[:8]}...: {last_price}")
+                                                    # We could save this to CSV if needed
                             elif isinstance(data, dict):
                                 token_id = data.get('asset_id')
                                 price = data.get('price')
@@ -197,7 +370,12 @@ async def data_collector(token_map, file_lock):
 # --- Step 4: Run the Collector ---
 if __name__ == "__main__":
     print("--- Polymarket Arbitrage Data Collector ---")
-    setup_output_file()
+    
+    # Print current working directory for debugging
+    print(f"[INFO] Current working directory: {os.getcwd()}")
+    
+    # Setup output files and directories
+    setup_output_files()
     
     # Use test tokens if in test mode
     if TEST_MODE:
@@ -205,6 +383,12 @@ if __name__ == "__main__":
         market_context_map = TEST_TOKENS
     else:
         market_context_map = load_market_context()
+        print(f"[INFO] Loaded {len(market_context_map)} tokens from market context")
         
     lock = asyncio.Lock()
-    asyncio.run(data_collector(market_context_map, lock))
+    try:
+        asyncio.run(data_collector(market_context_map, lock))
+    except Exception as e:
+        print(f"[FATAL] Unhandled exception in main: {e}")
+        import traceback
+        traceback.print_exc()
