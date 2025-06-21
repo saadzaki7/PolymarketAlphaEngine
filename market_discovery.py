@@ -226,8 +226,8 @@ def main():
                     'Title': e.get('title'),
                     'Number of Outcomes': len(e.get('markets', [])),
                     'Active': e.get('active'),
-                    'Start Date': e.get('start_date'),
-                    'End Date': e.get('end_date')
+                    'Start Date': e.get('startDate'),
+                    'End Date': e.get('endDate')
                 }
                 markets_list = e.get('markets', [])
                 for i, market in enumerate(markets_list):
@@ -275,20 +275,20 @@ def main():
     for event in verified_active_events:
         active_markets = []
         for market in event.get('markets', []):
-            end_date_str = market.get('endDate')
+            endDate_str = market.get('endDate')
             
             # Perform all checks to ensure the market is currently tradable
             if (market.get('active') is True and
                 market.get('enableOrderBook') is True and
-                end_date_str):
+                endDate_str):
                 
                 try:
                     # Parse the end date and check if it's in the future
-                    if end_date_str.endswith('Z'):
-                        end_date_str = end_date_str[:-1] + '+00:00'
-                    end_date = datetime.fromisoformat(end_date_str)
+                    if endDate_str.endswith('Z'):
+                        endDate_str = endDate_str[:-1] + '+00:00'
+                    endDate = datetime.fromisoformat(endDate_str)
 
-                    if end_date > now:
+                    if endDate > now:
                         active_markets.append(market)
                 except (ValueError, TypeError):
                     # Ignore markets with invalid date formats
@@ -317,10 +317,15 @@ def main():
         # Create fieldnames for multi-outcome CSV
         multi_outcome_fieldnames = ['Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date']
         for i in range(max_multi_outcomes):
-            multi_outcome_fieldnames.append(f'Outcome {i+1} Question')
-            multi_outcome_fieldnames.append(f'Outcome {i+1} Market ID')
-            multi_outcome_fieldnames.append(f'Outcome {i+1} Yes Token ID')
-            multi_outcome_fieldnames.append(f'Outcome {i+1} No Token ID')
+            multi_outcome_fieldnames.extend([
+                f'Outcome {i+1} Question',
+                f'Outcome {i+1} Market ID',
+                f'Outcome {i+1} Yes Token ID',
+                f'Outcome {i+1} No Token ID',
+                f'Outcome {i+1} Liquidity',
+                f'Outcome {i+1} Volume 24hr',
+                f'Outcome {i+1} Spread'
+            ])
         
         # Write multi-outcome events to CSV
         with open(multi_outcome_csv_file, 'w', newline='', encoding='utf-8') as multi_csvfile:
@@ -333,8 +338,8 @@ def main():
                     'Title': e.get('title'),
                     'Number of Outcomes': len(e.get('markets', [])),
                     'Active': e.get('active'),
-                    'Start Date': e.get('start_date'),
-                    'End Date': e.get('end_date')
+                    'Start Date': e.get('startDate'),
+                    'End Date': e.get('endDate')
                 }
                 
                 # Add each market question to the row
@@ -359,6 +364,9 @@ def main():
                                 pass
                         row[f'Outcome {i+1} Yes Token ID'] = yes_token_id
                         row[f'Outcome {i+1} No Token ID'] = no_token_id
+                        row[f'Outcome {i+1} Liquidity'] = market.get('liquidityNum')
+                        row[f'Outcome {i+1} Volume 24hr'] = market.get('volume24hr')
+                        row[f'Outcome {i+1} Spread'] = market.get('spread')
                 
                 multi_writer.writerow(row)
         
@@ -370,8 +378,8 @@ def main():
             print(f"  Title: {e.get('title')}")
             print(f"  Number of Outcomes: {len(e.get('markets', []))}")
             print(f"  Active: {e.get('active')}")
-            print(f"  Start Date: {e.get('start_date')}")
-            print(f"  End Date: {e.get('end_date')}")
+            print(f"  Start Date: {e.get('startDate')}")
+            print(f"  End Date: {e.get('endDate')}")
             print("  Outcomes (Markets):")
             markets_list_console = e.get('markets', [])
             for market_console in markets_list_console:
@@ -392,6 +400,12 @@ def main():
                 print(f"    - {market_console.get('question')} (Market ID: {market_id})")
                 print(f"      Yes CLOB Token ID: {yes_token}")
                 print(f"      No CLOB Token ID: {no_token}")
+                liquidity = market_console.get('liquidityNum', 'N/A')
+                volume_24hr = market_console.get('volume24hr', 'N/A')
+                spread = market_console.get('spread', 'N/A')
+                print(f"      Liquidity: {liquidity}")
+                print(f"      Volume (24hr): {volume_24hr}")
+                print(f"      Spread: {spread}")
             print("") # Print a newline after each event's details
     else:
         print(f"No multi-outcome events found among the {len(all_detailed_events)} processed events.")
