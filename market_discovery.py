@@ -311,20 +311,46 @@ def main():
         multi_outcome_csv_file = 'multi_outcome_polymarket_events.csv'
         print(f"Writing {len(multi_outcome_events)} multi-outcome events to {multi_outcome_csv_file}...")
         
-        # Find the maximum number of outcomes for header generation
-        max_multi_outcomes = max(len(e.get('markets', [])) for e in multi_outcome_events)
-        
-        # Create fieldnames for multi-outcome CSV
-        multi_outcome_fieldnames = ['Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date']
-        for i in range(max_multi_outcomes):
+        multi_outcome_csv_file = 'multi_outcome_polymarket_events.csv'
+        max_multi_outcomes = max((len(e.get('markets', [])) for e in multi_outcome_events), default=0)
+
+        # --- Calculate Priority Score and Sort ---
+        print("\nCalculating priority scores and sorting events...")
+        for e in multi_outcome_events:
+            max_priority_score = 0
+            for market in e.get('markets', []):
+                # Ensure values are numeric and handle None
+                liquidity = float(market.get('liquidityNum', 0) or 0)
+                volume = float(market.get('volume24hr', 0) or 0)
+                spread = float(market.get('spread', 0) or 0)
+                
+                # Priority score rewards high spread multiplied by liquidity and volume (Actionable Inefficiency).
+                priority_score = (liquidity + (volume * 0.5)) * spread
+                if priority_score > max_priority_score:
+                    max_priority_score = priority_score
+            e['priority_score'] = max_priority_score
+
+        # Sort events by the calculated priority score in descending order
+        multi_outcome_events.sort(key=lambda x: x.get('priority_score', 0), reverse=True)
+        print("Sorting complete. Top 5 events by priority score:")
+        for i, e in enumerate(multi_outcome_events[:5]):
+            print(f"  {i+1}. Title: {e.get('title')}, Score: {e.get('priority_score'):.2f}")
+
+
+        # --- Write Multi-Outcome Events to CSV ---
+        multi_outcome_fieldnames = [
+            'Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date', 'Priority Score'
+        ]
+
+        for i in range(1, max_multi_outcomes + 1):
             multi_outcome_fieldnames.extend([
-                f'Outcome {i+1} Question',
-                f'Outcome {i+1} Market ID',
-                f'Outcome {i+1} Yes Token ID',
-                f'Outcome {i+1} No Token ID',
-                f'Outcome {i+1} Liquidity',
-                f'Outcome {i+1} Volume 24hr',
-                f'Outcome {i+1} Spread'
+                f'Outcome {i} Question',
+                f'Outcome {i} Market ID',
+                f'Outcome {i} Yes Token ID',
+                f'Outcome {i} No Token ID',
+                f'Outcome {i} Liquidity',
+                f'Outcome {i} Volume 24hr',
+                f'Outcome {i} Spread'
             ])
         
         # Write multi-outcome events to CSV
@@ -339,7 +365,8 @@ def main():
                     'Number of Outcomes': len(e.get('markets', [])),
                     'Active': e.get('active'),
                     'Start Date': e.get('startDate'),
-                    'End Date': e.get('endDate')
+                    'End Date': e.get('endDate'),
+                    'Priority Score': e.get('priority_score')
                 }
                 
                 # Add each market question to the row
