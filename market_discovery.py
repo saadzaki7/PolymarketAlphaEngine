@@ -389,18 +389,17 @@ def main():
                         except (ValueError, TypeError):
                             pass
                 
-                # Calculate implied probabilities and arbitrage opportunities
+                # Calculate mutual exclusivity based on sum of best bids only
                 sum_bids = sum(bids) if bids else 0
                 
-                # Determine if mutually exclusive based on bid prices
-                # If sum of bids is close to 1.0 AND not close to 0, likely mutually exclusive
-                is_mutually_exclusive = bids and abs(sum_bids - 1.0) <= ME_PRICE_THRESHOLD and sum_bids > 0.5
-                
-                # Check for non-exclusivity based on event title/type
-                non_exclusive_keywords = ['playoff', 'make it', 'qualify']
-                if any(keyword in e.get('title', '').lower() for keyword in non_exclusive_keywords):
-                    # These events are likely not mutually exclusive (multiple teams can qualify)
-                    is_mutually_exclusive = False
+                # Determine mutual exclusivity purely based on price metrics
+                # An event is mutually exclusive if:
+                # 1. Sum of bids is close to 1.0 (within 0.25)
+                # 2. Sum of bids is greater than 0.5 (significant market activity)
+                # 3. Sum of bids is not too high (>1.5 suggests non-exclusivity)
+                is_mutually_exclusive = (abs(sum_bids - 1.0) <= 0.25 and 
+                                        sum_bids > 0.5 and 
+                                        sum_bids < 1.5)
                 
                 # Calculate arbitrage opportunities
                 arb_opportunity = 0
