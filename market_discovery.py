@@ -217,7 +217,7 @@ def main():
         else:
             max_outcomes_for_csv = 0
     
-    csv_fieldnames = ['Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date']
+    csv_fieldnames = ['Event ID', 'Title', 'Number of Outcomes', 'Active', 'Start Date', 'End Date', 'Volume', 'Volume (24h)', 'Liquidity']
     for i in range(max_outcomes_for_csv):
         csv_fieldnames.append(f'Outcome {i+1} Question')
         csv_fieldnames.append(f'Outcome {i+1} Market ID')
@@ -235,7 +235,10 @@ def main():
                     'Number of Outcomes': len(e.get('markets', [])),
                     'Active': e.get('active'),
                     'Start Date': e.get('startDate'),
-                    'End Date': e.get('endDate')
+                    'End Date': e.get('endDate'),
+                    'Volume': e.get('volume'),
+                    'Volume (24h)': e.get('volume24hr'),
+                    'Liquidity': e.get('liquidity')
                 }
                 markets_list = e.get('markets', [])
                 for i, market in enumerate(markets_list):

@@ -25,13 +25,16 @@ def parse_event(row: Dict[str, str]) -> Dict[str, Any]:
         'number_of_outcomes': int(row['Number of Outcomes']),
         'start_date': row['Start Date'],
         'end_date': row['End Date'],
-        'days_to_resolution': float(row['Days to Resolution']),
-        'priority_score': float(row['Priority Score']),
-        'mutually_exclusive': parse_bool(row['Mutually Exclusive']),
-        'sum_of_bids': float(row['Sum Bids'] or 0),
-        'arbitrage_opportunity': float(row['Arbitrage Opportunity'] or 0),
-        'annualized_return': float(row['Annualized Return'] or 0),
-        'has_liquidity': parse_bool(row['Has Liquidity']),
+        'volume': float(row.get('Volume') or 0),
+        'volume_24h': float(row.get('Volume (24h)') or 0),
+        'liquidity': float(row.get('Liquidity') or 0),
+        'days_to_resolution': float(row.get('Days to Resolution', 0) or 0),
+        'priority_score': float(row.get('Priority Score', 0) or 0),
+        'mutually_exclusive': parse_bool(row.get('Mutually Exclusive', 'false')),
+        'sum_of_bids': float(row.get('Sum Bids', 0) or 0),
+        'arbitrage_opportunity': float(row.get('Arbitrage Opportunity', 0) or 0),
+        'annualized_return': float(row.get('Annualized Return', 0) or 0),
+        'has_liquidity': parse_bool(row.get('Has Liquidity', 'false')),
         'outcomes': []
     }
     
@@ -57,7 +60,7 @@ def parse_event(row: Dict[str, str]) -> Dict[str, Any]:
     return event
 
 def main():
-    input_file = Path('multi_outcome_polymarket_events.csv')
+    input_file = Path('all_polymarket_events.csv')
     output_file = Path('polymarket_events.json')
     
     if not input_file.exists():
