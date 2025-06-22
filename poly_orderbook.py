@@ -19,6 +19,7 @@ from data_models import Event
 from orderbook_manager import OrderBookManager
 from order_printer import OrderBookPrinter
 from poly_websocket import PolyWebSocket
+from arbitrage_analyzer import ArbitrageAnalyzer
 
 # Set up logging
 logging.basicConfig(
@@ -51,7 +52,8 @@ class PolyOrderBookApp:
         print_interval: int = 5,
         event_id_filter: Optional[str] = None,
         save_raw: bool = False,
-        raw_output_file: str = DEFAULT_RAW_OUTPUT_FILE
+        raw_output_file: str = DEFAULT_RAW_OUTPUT_FILE,
+        arbitrage_threshold: float = 1.05
     ):
         """
         Initialize the Polymarket order book application.
@@ -71,6 +73,8 @@ class PolyOrderBookApp:
         self.running = False
         self.save_raw = save_raw
         self.raw_output_file = raw_output_file
+        self.arbitrage_analyzer = ArbitrageAnalyzer(threshold=arbitrage_threshold)
+        logger.info(f"Arbitrage analyzer initialized with threshold {arbitrage_threshold}")
         
         # Create directory for raw output file if saving raw data
         if self.save_raw:
@@ -118,7 +122,26 @@ class PolyOrderBookApp:
             
         processed = self.orderbook_manager.handle_book_update(data)
         if processed:
-            logger.debug(f"Processed book update for asset_id {data.get('asset_id', '')[:8]}...")
+            asset_id = data.get('asset_id', '')
+            logger.debug(f"Processed book update for asset_id {asset_id[:8] if asset_id else 'unknown'}")
+            
+            # Check for arbitrage opportunities
+            token_info = self.orderbook_manager.token_mapper.get_outcome_info(asset_id)
+            if token_info:
+                event_id, outcome_id, side = token_info
+                event = self.orderbook_manager.events.get(event_id)
+                if event:
+                    # Log the number of outcomes in this event
+                    outcome_count = len(event.outcomes) if event.outcomes else 0
+                    logger.debug(f"Event {event.title} has {outcome_count} outcomes")
+                    
+                    # Run arbitrage check if we have at least two outcomes
+                    # This ensures we have enough data to make a meaningful calculation
+                    if outcome_count >= 2:
+                        # Run arbitrage check on the updated event
+                        self.arbitrage_analyzer.check_event(event)
+                    else:
+                        logger.debug(f"Skipping arbitrage check for event {event.title} - insufficient outcomes ({outcome_count})")
     
     async def start(self):
         """Start the order book application."""
@@ -195,6 +218,7 @@ async def main():
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Logging level")
     parser.add_argument("--save-raw", action="store_true", help="Save raw book updates to file")
     parser.add_argument("--raw-output-file", default=DEFAULT_RAW_OUTPUT_FILE, help=f"File to save raw book updates (default: {DEFAULT_RAW_OUTPUT_FILE})")
+    parser.add_argument("--arbitrage-threshold", type=float, default=0.99, help="Threshold value for arbitrage detection (default: 0.99)")
     args = parser.parse_args()
     
     # Set logging level
@@ -207,7 +231,8 @@ async def main():
         print_interval=args.print_interval,
         event_id_filter=args.event_id,
         save_raw=args.save_raw,
-        raw_output_file=args.raw_output_file
+        raw_output_file=args.raw_output_file,
+        arbitrage_threshold=args.arbitrage_threshold
     )
     
     # Handle graceful shutdown on interrupt

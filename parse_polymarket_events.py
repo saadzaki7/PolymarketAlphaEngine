@@ -60,7 +60,7 @@ def parse_event(row: Dict[str, str]) -> Dict[str, Any]:
     return event
 
 def main():
-    input_file = Path('all_polymarket_events.csv')
+    input_file = Path('multi_outcome_polymarket_events.csv')
     output_file = Path('polymarket_events.json')
     
     if not input_file.exists():
