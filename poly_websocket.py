@@ -102,15 +102,16 @@ class PolyWebSocket:
                     
                 event_type = data.get('event_type')
                 
-                # Call specific handlers based on event type
+                # Skip price_change and tick_size_change messages silently
+                if event_type in ['price_change', 'tick_size_change']:
+                    continue
+                    
+                # Handle book updates if handler is provided
                 if event_type == 'book' and self.on_book:
                     await self.on_book(data)
-                elif event_type == 'price_change' and self.on_price_change:
-                    await self.on_price_change(data)
-                elif event_type == 'tick_size_change' and self.on_tick_size_change:
-                    await self.on_tick_size_change(data)
-                elif not self.on_message_callback:
-                    logger.info(f"Unhandled message type: {event_type}' - {data}")
+                # Log other unhandled message types
+                elif not self.on_message_callback and event_type not in ['price_change', 'tick_size_change']:
+                    logger.info(f"Unhandled message type: {event_type}")
                 
         except json.JSONDecodeError:
             logger.warning(f"Received non-JSON message: {message}")
