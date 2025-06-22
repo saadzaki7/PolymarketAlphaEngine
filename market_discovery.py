@@ -347,8 +347,9 @@ def main():
         # Define CSV headers for multi-outcome events
         multi_outcome_fieldnames = [
             'Event ID', 'Title', 'Number of Outcomes', 'Active',
-            'Start Date', 'End Date', 'Priority Score', 'Mutually Exclusive',
-            'Sum Bids', 'Arbitrage Opportunity', 'Has Liquidity'
+            'Start Date', 'End Date', 'Days to Resolution', 'Priority Score', 
+            'Mutually Exclusive', 'Sum Bids', 'Arbitrage Opportunity', 
+            'Annualized Return', 'Has Liquidity'
         ]
 
         for i in range(1, max_multi_outcomes + 1):
@@ -415,16 +416,61 @@ def main():
                 # Take the better of the two arbitrage opportunities
                 arb_opportunity = max(arb_opportunity, short_arb)
                 
+                # Get event end date (use the earliest end date from all outcomes)
+                event_end_date = None
+                for market in e.get('markets', []):
+                    end_date_str = market.get('endDate')
+                    if end_date_str:
+                        try:
+                            # Parse the end date
+                            if end_date_str.endswith('Z'):
+                                end_date_str = end_date_str[:-1] + '+00:00'
+                            market_end_date = datetime.fromisoformat(end_date_str)
+                            
+                            # Track the earliest end date
+                            if event_end_date is None or market_end_date < event_end_date:
+                                event_end_date = market_end_date
+                        except:
+                            continue
+                
+                # Calculate days to resolution
+                current_date = datetime.now(timezone.utc)
+                days_to_resolution = 365  # Default to 1 year if no end date
+                event_end_date_str = ''
+                if event_end_date:
+                    days_to_resolution = max(1, (event_end_date - current_date).days)  # At least 1 day
+                    event_end_date_str = event_end_date.isoformat()
+                
+                # Calculate annualized return (simplified)
+                annualized_return = 0
+                if is_mutually_exclusive and arb_opportunity > 0 and sum_bids > 0 and days_to_resolution > 0:
+                    # Quick estimate of annualized return (ignoring fees for simplicity)
+                    annualized_return = (arb_opportunity / sum_bids) * (365 / days_to_resolution)
+                
                 # Calculate normalized probabilities (forcing sum to 1.0)
                 normalized_bids = [bid/sum_bids for bid in bids] if sum_bids > 0 else []
                 
-                # Calculate priority score boost for mutually exclusive events with liquidity
-                priority_score = e.get('priority_score', 0)
+                # Calculate priority score based on liquidity and volume
                 has_liquidity = any(liq >= MIN_LIQUIDITY for liq in liquidities)
+                priority_score = 0
                 
+                if has_liquidity:
+                    # Calculate priority score based on liquidity and volume
+                    total_liquidity = sum(liquidities)
+                    volume_24hr = sum([market.get('volume24hr', 0) or 0 for market in markets])
+                    priority_score = (total_liquidity + (volume_24hr * 0.5))
+                    
+                # Boost priority for mutually exclusive events with liquidity
                 if is_mutually_exclusive and has_liquidity:
-                    # Boost priority score for mutually exclusive events with liquidity
+                    # First boost for being mutually exclusive
                     priority_score = priority_score * 2.0 if priority_score else 2000
+                    
+                    # Additional boost based on annualized return for arbitrage opportunities
+                    if arb_opportunity > 0 and annualized_return > 0:
+                        # Higher annualized return = higher priority
+                        # Cap the multiplier at 5x to avoid extreme values
+                        annualized_boost = min(5.0, 1.0 + annualized_return * 3.0)
+                        priority_score = priority_score * annualized_boost
                 
                 # Create a row for this event with default values for all fields
                 row = {
@@ -433,11 +479,13 @@ def main():
                     'Number of Outcomes': num_outcomes,
                     'Active': e.get('active', False),
                     'Start Date': e.get('startDate', ''),
-                    'End Date': e.get('endDate', ''),
+                    'End Date': event_end_date_str,  # Use our calculated end date
+                    'Days to Resolution': days_to_resolution,
                     'Priority Score': priority_score,
                     'Mutually Exclusive': is_mutually_exclusive,
                     'Sum Bids': sum_bids,
                     'Arbitrage Opportunity': arb_opportunity,
+                    'Annualized Return': annualized_return,
                     'Has Liquidity': has_liquidity
                 }
                 
