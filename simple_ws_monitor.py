@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import asyncio
-import csv
 import datetime
 import json
 import os
@@ -8,10 +7,9 @@ import websockets
 from datetime import datetime, timezone
 
 # Configuration
-NUM_EVENTS_TO_MONITOR = 10  # Monitor top 10 events
+NUM_EVENTS_TO_MONITOR = 200  # Monitor top 200 events by priority
 INPUT_CSV_FILE = 'multi_outcome_polymarket_events.csv'
-OUTPUT_CSV_FILE = 'market_data_timeseries.csv'
-ORDERBOOK_DATA_DIR = 'orderbook_data'  # Directory to store full orderbook JSON files
+RAW_OUTPUT_FILE = 'socket_raw_data.jsonl'  # File to store every raw websocket message
 WEBSOCKET_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market' # Correct endpoint for market data
 
 # Hardcoded test tokens from your example
@@ -31,6 +29,7 @@ def load_market_context(limit=NUM_EVENTS_TO_MONITOR):
     print(f"Loading context for top {limit} events from '{INPUT_CSV_FILE}'...")
     try:
         with open(INPUT_CSV_FILE, 'r', newline='', encoding='utf-8') as f:
+            import csv
             reader = csv.DictReader(f)
             for i, row in enumerate(reader):
                 if i >= limit:
@@ -65,35 +64,31 @@ def load_market_context(limit=NUM_EVENTS_TO_MONITOR):
         print(f"[ERROR] Failed to load market context: {e}")
         return {}
 
-# --- Step 2: Prepare a Data File ---
+
 def setup_output_files():
-    # Create CSV file with headers if it doesn't exist
-    if not os.path.exists(OUTPUT_CSV_FILE):
-        with open(OUTPUT_CSV_FILE, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['timestamp', 'event_id', 'market_id', 'question', 'token_id', 'side', 
-                           'best_bid', 'best_bid_size', 'best_ask', 'best_ask_size', 'mid_price', 'spread'])
-        print(f"[INFO] Created new CSV file: {OUTPUT_CSV_FILE}")
+    """Ensure the raw JSONL log file exists."""
+    if not os.path.exists(RAW_OUTPUT_FILE):
+        with open(RAW_OUTPUT_FILE, 'w', encoding='utf-8') as _:
+            pass
+        print(f"[INFO] Created raw websocket log file: {RAW_OUTPUT_FILE}")
     else:
-        print(f"[INFO] Using existing CSV file: {OUTPUT_CSV_FILE}")
-    
-    # Create directory for orderbook data if it doesn't exist
-    if not os.path.exists(ORDERBOOK_DATA_DIR):
-        os.makedirs(ORDERBOOK_DATA_DIR)
-        print(f"[INFO] Created directory: {ORDERBOOK_DATA_DIR}")
+        print(f"[INFO] Using existing raw websocket log file: {RAW_OUTPUT_FILE}")
+    """Ensure the raw JSONL log file exists."""
+    if not os.path.exists(RAW_OUTPUT_FILE):
+        with open(RAW_OUTPUT_FILE, 'w', encoding='utf-8') as _:
+            pass
+        print(f"[INFO] Created raw websocket log file: {RAW_OUTPUT_FILE}")
     else:
-        print(f"[INFO] Using existing directory: {ORDERBOOK_DATA_DIR}")
-        
+        print(f"[INFO] Using existing raw websocket log file: {RAW_OUTPUT_FILE}")
     # Test file write permissions
     try:
-        test_file = f"{ORDERBOOK_DATA_DIR}/test_write.txt"
+        test_file = "test_write.txt"
         with open(test_file, 'w') as f:
             f.write("Test write permission")
         os.remove(test_file)
         print("[INFO] File write permissions confirmed")
     except Exception as e:
         print(f"[ERROR] File write permission test failed: {e}")
-        print(f"Created directory for orderbook data: {ORDERBOOK_DATA_DIR}")
 
 # --- Step 3: Main Websocket Collector ---
 async def data_collector(token_map, file_lock):
@@ -132,7 +127,21 @@ async def data_collector(token_map, file_lock):
                             print(f"[{now}] [INFO] PONG received")
                             continue
                             
-                        print(f"[{now}] [DEBUG] Raw message: {message[:200]}...")
+                        # --- Simple raw logging ---
+                        timestamp_iso = datetime.now(timezone.utc).isoformat()
+                        try:
+                            parsed_msg = json.loads(message)
+                        except json.JSONDecodeError:
+                            parsed_msg = message  # leave as string if not JSON
+                        record = {"timestamp": timestamp_iso, "data": parsed_msg}
+                        async with file_lock:
+                            with open(RAW_OUTPUT_FILE, 'a', encoding='utf-8') as raw_f:
+                                json.dump(record, raw_f)
+                                raw_f.write("\n")
+                        print(f"[{now}] [RAW] Logged message to {RAW_OUTPUT_FILE}")
+                        print(f"[{now}] [DEBUG] Raw message: {str(parsed_msg)[:200]}...")
+                        # Skip any further complex processing; raw log is enough
+                        continue
 
                         try:
                             data = json.loads(message)
