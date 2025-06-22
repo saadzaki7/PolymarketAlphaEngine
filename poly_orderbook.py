@@ -10,6 +10,7 @@ import logging
 import argparse
 import signal
 import sys
+import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
@@ -26,6 +27,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger('poly_orderbook')
 
+# Default raw data output file
+DEFAULT_RAW_OUTPUT_FILE = 'book_updates.jsonl'
+
+def save_to_jsonl(data: Dict[str, Any], output_file: str) -> None:
+    """Append raw data to JSONL file."""
+    with open(output_file, 'a') as f:
+        # Add timestamp for when we received the data
+        data['_received_at'] = datetime.utcnow().isoformat()
+        f.write(json.dumps(data) + '\n')
+
 
 class PolyOrderBookApp:
     """
@@ -38,7 +49,9 @@ class PolyOrderBookApp:
         event_json: Optional[str] = None,
         event_file: Optional[str] = None,
         print_interval: int = 5,
-        event_id_filter: Optional[str] = None
+        event_id_filter: Optional[str] = None,
+        save_raw: bool = False,
+        raw_output_file: str = DEFAULT_RAW_OUTPUT_FILE
     ):
         """
         Initialize the Polymarket order book application.
@@ -48,12 +61,21 @@ class PolyOrderBookApp:
             event_file: Path to JSONL file containing event data
             print_interval: Interval in seconds to print order books
             event_id_filter: Only monitor events with this ID (optional)
+            save_raw: Whether to save raw book updates to file
+            raw_output_file: File to save raw book updates to
         """
         self.orderbook_manager = OrderBookManager()
         self.printer = OrderBookPrinter(print_interval=print_interval)
         self.websocket_client = None
         self.event_id_filter = event_id_filter
         self.running = False
+        self.save_raw = save_raw
+        self.raw_output_file = raw_output_file
+        
+        # Create directory for raw output file if saving raw data
+        if self.save_raw:
+            os.makedirs(os.path.dirname(os.path.abspath(self.raw_output_file)) or '.', exist_ok=True)
+            logger.info(f"Raw book updates will be saved to: {os.path.abspath(self.raw_output_file)}")
         
         # Load events
         if event_json:
@@ -88,6 +110,12 @@ class PolyOrderBookApp:
         Args:
             data: Order book update data
         """
+        # Save raw data to file if enabled
+        if self.save_raw:
+            save_to_jsonl(data, self.raw_output_file)
+            asset_id = data.get('asset_id', '')
+            logger.debug(f"Saved raw book update for asset_id {asset_id[:8] if asset_id else 'unknown'}")
+            
         processed = self.orderbook_manager.handle_book_update(data)
         if processed:
             logger.debug(f"Processed book update for asset_id {data.get('asset_id', '')[:8]}...")
@@ -165,6 +193,8 @@ async def main():
     parser.add_argument("--print-interval", type=int, default=5, help="Interval in seconds to print order books (default: 5)")
     parser.add_argument("--event-id", help="Only monitor events with this ID")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Logging level")
+    parser.add_argument("--save-raw", action="store_true", help="Save raw book updates to file")
+    parser.add_argument("--raw-output-file", default=DEFAULT_RAW_OUTPUT_FILE, help=f"File to save raw book updates (default: {DEFAULT_RAW_OUTPUT_FILE})")
     args = parser.parse_args()
     
     # Set logging level
@@ -175,7 +205,9 @@ async def main():
         event_json=args.event_json,
         event_file=args.event_file,
         print_interval=args.print_interval,
-        event_id_filter=args.event_id
+        event_id_filter=args.event_id,
+        save_raw=args.save_raw,
+        raw_output_file=args.raw_output_file
     )
     
     # Handle graceful shutdown on interrupt
