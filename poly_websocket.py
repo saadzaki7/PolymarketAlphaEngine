@@ -81,29 +81,36 @@ class PolyWebSocket:
     async def _handle_message(self, message: str) -> None:
         """Handle incoming WebSocket message."""
         try:
-            data = json.loads(message)
+            # Parse the message which could be a list or dict
+            parsed = json.loads(message)
             
-            # Log the raw message
-            logger.debug(f"Received message: {data}")
+            # Handle both list and single message cases
+            messages = parsed if isinstance(parsed, list) else [parsed]
             
-            # Route to appropriate handler based on event_type
-            event_type = data.get('event_type')
-            
-            # Call the general message handler if provided
-            if self.on_message_callback:
-                await self.on_message_callback(data)
+            for data in messages:
+                # Log the raw message
+                logger.debug(f"Processing message: {data}")
                 
-            # Call specific handlers based on event type
-            if event_type == 'book' and self.on_book:
-                await self.on_book(data)
-            elif event_type == 'price_change' and self.on_price_change:
-                await self.on_price_change(data)
-            elif event_type == 'tick_size_change' and self.on_tick_size_change:
-                await self.on_tick_size_change(data)
+                # Call the general message handler if provided
+                if self.on_message_callback:
+                    await self.on_message_callback(data)
                 
-            # Default logging if no specific handler
-            elif not self.on_message_callback:
-                logger.info(f"Unhandled message type '{event_type}': {data}")
+                # Route to appropriate handler based on event_type
+                if not isinstance(data, dict):
+                    logger.warning(f"Skipping non-dict message: {data}")
+                    continue
+                    
+                event_type = data.get('event_type')
+                
+                # Call specific handlers based on event type
+                if event_type == 'book' and self.on_book:
+                    await self.on_book(data)
+                elif event_type == 'price_change' and self.on_price_change:
+                    await self.on_price_change(data)
+                elif event_type == 'tick_size_change' and self.on_tick_size_change:
+                    await self.on_tick_size_change(data)
+                elif not self.on_message_callback:
+                    logger.info(f"Unhandled message type: {event_type}' - {data}")
                 
         except json.JSONDecodeError:
             logger.warning(f"Received non-JSON message: {message}")
