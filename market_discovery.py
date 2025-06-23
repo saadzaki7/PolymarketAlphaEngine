@@ -121,10 +121,10 @@ def fetch_detailed_events():
             all_event_ids.extend(page_ids)
             print(f"    - Found {len(page_ids)} events on this page. Total IDs so far: {len(all_event_ids)}")
             
-            # TEMPORARY: Limit to 5 pages for testing
-            if page_num >= 5:
-                print("  - Reached 5 pages limit (TEMPORARY LIMIT FOR TESTING)")
-                break
+            # # TEMPORARY: Limit to 5 pages for testing
+            # if page_num >= 5:
+            #     print("  - Reached 5 pages limit (TEMPORARY LIMIT FOR TESTING)")
+            #     break
                 
             # Continue pagination until there are no more events
             if len(event_summaries_page) < limit:
@@ -229,22 +229,29 @@ def main():
         writer.writeheader()
         if all_detailed_events:
             for e in all_detailed_events:
+                # Helper function to convert NaN to None
+                def clean_value(value):
+                    import math
+                    if value is not None and isinstance(value, float) and math.isnan(value):
+                        return None
+                    return value
+                
                 row = {
-                    'Event ID': e.get('id'),
-                    'Title': e.get('title'),
-                    'Number of Outcomes': len(e.get('markets', [])),
-                    'Active': e.get('active'),
-                    'Start Date': e.get('startDate'),
-                    'End Date': e.get('endDate'),
-                    'Volume': e.get('volume'),
-                    'Volume (24h)': e.get('volume24hr'),
-                    'Liquidity': e.get('liquidity')
+                    'Event ID': clean_value(e.get('id')),
+                    'Title': clean_value(e.get('title')),
+                    'Number of Outcomes': clean_value(len(e.get('markets', []))),
+                    'Active': clean_value(e.get('active')),
+                    'Start Date': clean_value(e.get('startDate')),
+                    'End Date': clean_value(e.get('endDate')),
+                    'Volume': clean_value(e.get('volume')),
+                    'Volume (24h)': clean_value(e.get('volume24hr')),
+                    'Liquidity': clean_value(e.get('liquidity'))
                 }
                 markets_list = e.get('markets', [])
                 for i, market in enumerate(markets_list):
                     if i < max_outcomes_for_csv: 
-                        row[f'Outcome {i+1} Question'] = market.get('question')
-                        row[f'Outcome {i+1} Market ID'] = market.get('id')
+                        row[f'Outcome {i+1} Question'] = clean_value(market.get('question'))
+                        row[f'Outcome {i+1} Market ID'] = clean_value(market.get('id'))
                         
                         # Extract CLOB token IDs if available
                         clob_token_ids_str = market.get('clobTokenIds')

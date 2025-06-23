@@ -54,7 +54,7 @@ class PolyOrderBookApp:
         event_id_filter: Optional[str] = None,
         save_raw: bool = False,
         raw_output_file: str = DEFAULT_RAW_OUTPUT_FILE,
-        arbitrage_threshold: float = 1.05,
+        arbitrage_threshold: float = 0.99,
         max_websocket_connections: int = 480
     ):
         """
