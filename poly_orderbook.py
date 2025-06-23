@@ -19,6 +19,7 @@ from data_models import Event
 from orderbook_manager import OrderBookManager
 from order_printer import OrderBookPrinter
 from poly_websocket import PolyWebSocket
+from multi_poly_websocket import MultiPolyWebSocket
 from arbitrage_analyzer import ArbitrageAnalyzer
 
 # Set up logging
@@ -53,7 +54,8 @@ class PolyOrderBookApp:
         event_id_filter: Optional[str] = None,
         save_raw: bool = False,
         raw_output_file: str = DEFAULT_RAW_OUTPUT_FILE,
-        arbitrage_threshold: float = 1.05
+        arbitrage_threshold: float = 1.05,
+        max_websocket_connections: int = 480
     ):
         """
         Initialize the Polymarket order book application.
@@ -74,7 +76,9 @@ class PolyOrderBookApp:
         self.save_raw = save_raw
         self.raw_output_file = raw_output_file
         self.arbitrage_analyzer = ArbitrageAnalyzer(threshold=arbitrage_threshold)
+        self.max_websocket_connections = max_websocket_connections
         logger.info(f"Arbitrage analyzer initialized with threshold {arbitrage_threshold}")
+        logger.info(f"Max token IDs per WebSocket connection: {self.max_websocket_connections}")
         
         # Create directory for raw output file if saving raw data
         if self.save_raw:
@@ -168,11 +172,20 @@ class PolyOrderBookApp:
         # Start the printer
         self.printer.start_periodic_printing(self.orderbook_manager.events)
         
-        # Initialize WebSocket client
-        self.websocket_client = PolyWebSocket(
-            asset_ids=token_ids,
-            on_book=self.handle_book_update
-        )
+        # Initialize WebSocket client based on the number of token IDs
+        if len(token_ids) > self.max_websocket_connections:
+            logger.info(f"Using MultiPolyWebSocket as token count ({len(token_ids)}) exceeds max per connection ({self.max_websocket_connections})")
+            self.websocket_client = MultiPolyWebSocket(
+                asset_ids=token_ids,
+                chunk_size=self.max_websocket_connections,
+                on_book=self.handle_book_update
+            )
+        else:
+            logger.info(f"Using single PolyWebSocket for {len(token_ids)} tokens")
+            self.websocket_client = PolyWebSocket(
+                asset_ids=token_ids,
+                on_book=self.handle_book_update
+            )
         
         try:
             # Start the WebSocket client
@@ -219,6 +232,7 @@ async def main():
     parser.add_argument("--save-raw", action="store_true", help="Save raw book updates to file")
     parser.add_argument("--raw-output-file", default=DEFAULT_RAW_OUTPUT_FILE, help=f"File to save raw book updates (default: {DEFAULT_RAW_OUTPUT_FILE})")
     parser.add_argument("--arbitrage-threshold", type=float, default=0.99, help="Threshold value for arbitrage detection (default: 0.99)")
+    parser.add_argument("--max-ws-connections", type=int, default=450, help="Maximum number of token IDs per websocket connection (default: 450)")
     args = parser.parse_args()
     
     # Set logging level
@@ -232,7 +246,8 @@ async def main():
         event_id_filter=args.event_id,
         save_raw=args.save_raw,
         raw_output_file=args.raw_output_file,
-        arbitrage_threshold=args.arbitrage_threshold
+        arbitrage_threshold=args.arbitrage_threshold,
+        max_websocket_connections=args.max_ws_connections
     )
     
     # Handle graceful shutdown on interrupt
