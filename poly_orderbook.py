@@ -11,6 +11,7 @@ import argparse
 import signal
 import sys
 import os
+import gc
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
@@ -21,12 +22,9 @@ from order_printer import OrderBookPrinter
 from poly_websocket import PolyWebSocket
 from multi_poly_websocket import MultiPolyWebSocket
 from arbitrage_analyzer import ArbitrageAnalyzer
+from logging_config import configure_logging
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Initialize logger but don't configure it yet - will be done in main()
 logger = logging.getLogger('poly_orderbook')
 
 # Default raw data output file
@@ -55,7 +53,8 @@ class PolyOrderBookApp:
         save_raw: bool = False,
         raw_output_file: str = DEFAULT_RAW_OUTPUT_FILE,
         arbitrage_threshold: float = 0.99,
-        max_websocket_connections: int = 480
+        max_websocket_connections: int = 480,
+        disable_print: bool = False
     ):
         """
         Initialize the Polymarket order book application.
@@ -77,6 +76,7 @@ class PolyOrderBookApp:
         self.raw_output_file = raw_output_file
         self.arbitrage_analyzer = ArbitrageAnalyzer(threshold=arbitrage_threshold)
         self.max_websocket_connections = max_websocket_connections
+        self.disable_print = disable_print
         logger.info(f"Arbitrage analyzer initialized with threshold {arbitrage_threshold}")
         logger.info(f"Max token IDs per WebSocket connection: {self.max_websocket_connections}")
         
@@ -169,8 +169,11 @@ class PolyOrderBookApp:
             logger.error("No token IDs found to subscribe to")
             return
         
-        # Start the printer
-        self.printer.start_periodic_printing(self.orderbook_manager.events)
+        # Start the printer with periodic updates if not disabled
+        if not self.disable_print:
+            self.printer.start_periodic_printing(self.orderbook_manager.events)
+        else:
+            logger.info("Periodic printing disabled, order books will not be displayed")
         
         # Initialize WebSocket client based on the number of token IDs
         if len(token_ids) > self.max_websocket_connections:
@@ -195,6 +198,10 @@ class PolyOrderBookApp:
             # Keep the client running until interrupted
             while self.running:
                 await asyncio.sleep(1)
+                # Force garbage collection every 60 seconds to help manage memory
+                if int(datetime.now().timestamp()) % 60 == 0:
+                    gc.collect()
+                    logger.debug("Forced garbage collection")
                 
         except asyncio.CancelledError:
             logger.info("Application shutdown requested...")
@@ -229,14 +236,26 @@ async def main():
     parser.add_argument("--print-interval", type=int, default=5, help="Interval in seconds to print order books (default: 5)")
     parser.add_argument("--event-id", help="Only monitor events with this ID")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Logging level")
+    parser.add_argument("--log-file", default="logs/poly_orderbook.log", help="Path to log file (default: logs/poly_orderbook.log)")
+    parser.add_argument("--log-max-size", type=int, default=10, help="Maximum log file size in MB before rotation (default: 10)")
+    parser.add_argument("--log-backup-count", type=int, default=5, help="Number of backup log files to keep (default: 5)")
+    parser.add_argument("--disable-console-log", action="store_true", help="Disable logging to console")
+    parser.add_argument("--disable-print", action="store_true", help="Disable printing order books to console")
     parser.add_argument("--save-raw", action="store_true", help="Save raw book updates to file")
     parser.add_argument("--raw-output-file", default=DEFAULT_RAW_OUTPUT_FILE, help=f"File to save raw book updates (default: {DEFAULT_RAW_OUTPUT_FILE})")
+    parser.add_argument("--raw-max-size", type=int, default=100, help="Maximum raw output file size in MB before rotation (default: 100)")
     parser.add_argument("--arbitrage-threshold", type=float, default=0.99, help="Threshold value for arbitrage detection (default: 0.99)")
     parser.add_argument("--max-ws-connections", type=int, default=450, help="Maximum number of token IDs per websocket connection (default: 450)")
     args = parser.parse_args()
     
-    # Set logging level
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    # Configure centralized logging
+    configure_logging(
+        log_level=args.log_level,
+        log_file=args.log_file,
+        max_file_size_mb=args.log_max_size,
+        backup_count=args.log_backup_count,
+        console_output=not args.disable_console_log
+    )
     
     # Create and start the application
     app = PolyOrderBookApp(
@@ -247,7 +266,8 @@ async def main():
         save_raw=args.save_raw,
         raw_output_file=args.raw_output_file,
         arbitrage_threshold=args.arbitrage_threshold,
-        max_websocket_connections=args.max_ws_connections
+        max_websocket_connections=args.max_ws_connections,
+        disable_print=args.disable_print
     )
     
     # Handle graceful shutdown on interrupt

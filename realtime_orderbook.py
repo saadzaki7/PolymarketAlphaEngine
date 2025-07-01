@@ -9,7 +9,7 @@ import websockets
 # Constants
 INPUT_CSV_FILE = "/Users/saadzaki/Documents/Polymarket/multi_outcome_polymarket_events.csv"
 NUM_EVENTS_TO_MONITOR = 2  # Only monitor top 2 events by priority
-WEBSOCKET_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"  # Correct endpoint for market data
+WEBSOCKET_URL = "wss://clob.polymarket.com/ws"  # Main WebSocket endpoint
 RAW_OUTPUT_FILE = "orderbook_data.jsonl"  # File to store raw orderbook updates
 
 # Global data structure to maintain the latest orderbook state
@@ -307,7 +307,8 @@ async def data_collector():
     
     # Create a single subscription message for all tokens
     subscription_message = json.dumps({
-        "type": "market",
+        "type": "subscribe",
+        "channels": ["market"],
         "assets_ids": all_token_ids
     })
     print(f"[DEBUG] Subscription message: {subscription_message[:100]}...")
@@ -348,10 +349,11 @@ async def data_collector():
                                 
                                 # Process messages based on their structure
                                 if isinstance(parsed_msg, dict):
-                                    # Handle price change events
-                                    if parsed_msg.get("event_type") == "price_change":
-                                        asset_id = parsed_msg.get("asset_id")
-                                        changes = parsed_msg.get("changes", [])
+                                    # Check if this is a market data update
+                                    if parsed_msg.get("type") == "market_data":
+                                        data = parsed_msg.get("data", {})
+                                        asset_id = data.get("asset_id")
+                                        changes = data.get("changes", [])
                                         
                                         if asset_id and changes:
                                             # Update our internal orderbook
@@ -361,11 +363,18 @@ async def data_collector():
                                                 print(f"[{now}] Updated orderbook for token {asset_id}")
                                                 
                                                 # Print the updated orderbook summary every 5 seconds
-                                                # This is to avoid too much console output
                                                 current_time = datetime.now().timestamp()
                                                 if current_time - data_collector.last_print_time >= 5:
                                                     print_orderbook_summary()
                                                     data_collector.last_print_time = current_time
+                                
+                                    # Handle subscription confirmation
+                                    elif parsed_msg.get("type") == "subscribed":
+                                        print(f"[{now}] Successfully subscribed to {len(parsed_msg.get('assets_ids', []))} tokens")
+                                
+                                    # Handle ping/pong
+                                    elif parsed_msg.get("type") == "pong":
+                                        print(f"[{now}] [INFO] PONG received")
                             
                             except json.JSONDecodeError:
                                 print(f"[{now}] [ERROR] Failed to parse message: {message[:100]}...")

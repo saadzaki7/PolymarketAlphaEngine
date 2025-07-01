@@ -7,15 +7,12 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import time
 import threading
+import io
 from tabulate import tabulate
 
 from data_models import Event, OrderBook, OrderBookLevel
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Initialize logger
 logger = logging.getLogger('order_printer')
 
 
@@ -25,16 +22,18 @@ class OrderBookPrinter:
     Can run in a background thread to print updates at regular intervals.
     """
     
-    def __init__(self, print_interval: int = 5):
+    def __init__(self, print_interval: int = 5, use_console: bool = True):
         """
         Initialize the order book printer.
         
         Args:
             print_interval: Interval in seconds to print order books (default: 5)
+            use_console: Whether to print to console (default: True)
         """
         self.print_interval = print_interval
         self.timer_thread = None
         self.running = False
+        self.use_console = use_console
         
     def _format_level(self, level: Optional[OrderBookLevel]) -> str:
         """Format a single order book level for display."""
@@ -76,7 +75,8 @@ class OrderBookPrinter:
         Args:
             event: Event object to print order books for
         """
-        print(f"\n===== {event.title} Order Books - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====")
+        # Format the header
+        header = f"\n===== {event.title} Order Books - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====="
         
         table_data = []
         headers = ["Team/Outcome", "Best Bid", "2nd Bid", "Best Ask", "2nd Ask", "Spread", "Updated"]
@@ -119,14 +119,31 @@ class OrderBookPrinter:
         if table_data:
             table_data.pop()
         
-        print(tabulate(table_data, headers=headers, tablefmt="pretty"))
-        print(f"Total Outcomes: {len(event.outcomes)}")
+        # Format the table
+        table = tabulate(table_data, headers=headers, tablefmt="pretty")
+        footer = f"Total Outcomes: {len(event.outcomes)}"
+        
+        # Combine all parts
+        output = f"{header}\n{table}\n{footer}"
+        
+        # Log the formatted output
+        if self.use_console:
+            # If console output is enabled, print directly
+            print(output)
+        else:
+            # Otherwise just log at INFO level
+            logger.info(f"Order book update for {event.title} with {len(event.outcomes)} outcomes")
+            # And log the full table at DEBUG level
+            logger.debug(f"\n{output}")
         
     def _print_timer(self, events: Dict[str, Event]):
         """Background thread function to print order books at regular intervals."""
         while self.running:
-            for event_id, event in events.items():
-                self.print_event_order_books(event)
+            try:
+                for event_id, event in events.items():
+                    self.print_event_order_books(event)
+            except Exception as e:
+                logger.error(f"Error in print timer: {e}", exc_info=True)
             time.sleep(self.print_interval)
     
     def start_periodic_printing(self, events: Dict[str, Event]):
